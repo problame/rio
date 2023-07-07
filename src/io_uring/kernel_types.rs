@@ -17,6 +17,7 @@ pub struct io_uring_cqe {
 
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone)]
+#[allow(missing_docs)]
 pub struct io_uring_params {
     pub sq_entries: u32,
     pub cq_entries: u32,

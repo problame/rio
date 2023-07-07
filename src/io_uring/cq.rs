@@ -1,6 +1,6 @@
 #![allow(unsafe_code)]
 
-use std::slice::from_raw_parts_mut;
+use std::{ops::ControlFlow, slice::from_raw_parts_mut};
 
 use super::*;
 
@@ -80,32 +80,53 @@ impl Cq {
         })
     }
 
-    pub(crate) fn reaper(&mut self, ring_fd: i32) {
-        fn block_for_cqe(ring_fd: i32) -> io::Result<()> {
+    pub(crate) fn reaper_thread(&mut self, ring_fd: i32) {
+        loop {
+            match self.reaper_iter::<true>(ring_fd) {
+                ControlFlow::Continue(_) => continue,
+                ControlFlow::Break(()) => return,
+            }
+        }
+    }
+
+    pub(crate) fn reaper_iter<const WAIT: bool>(
+        &mut self,
+        ring_fd: i32,
+    ) -> ControlFlow<(), usize> {
+        fn block_or_poll_for_cqe<const WAIT: bool>(
+            ring_fd: i32,
+        ) -> io::Result<()> {
             let flags = IORING_ENTER_GETEVENTS;
             let submit = 0;
-            let wait = 1;
+            let min_complete = if WAIT { 1 } else { 0 };
             let sigset = std::ptr::null_mut();
 
             let _ = Measure::new(&M.enter_cqe);
-            enter(ring_fd, submit, wait, flags, sigset)?;
+            enter(
+                ring_fd,
+                submit,
+                min_complete,
+                flags,
+                sigset,
+            )?;
 
             Ok(())
         }
 
-        loop {
-            if let Err(e) = block_for_cqe(ring_fd) {
-                panic!("error in cqe reaper: {:?}", e);
-            } else {
-                assert_eq!(
-                    unsafe {
-                        (*self.koverflow).load(Relaxed)
-                    },
-                    0
-                );
-                if self.reap_ready_cqes().is_none() {
+        if let Err(e) =
+            block_or_poll_for_cqe::<WAIT>(ring_fd)
+        {
+            panic!("error in cqe reaper: {:?}", e);
+        } else {
+            assert_eq!(
+                unsafe { (*self.koverflow).load(Relaxed) },
+                0
+            );
+            match self.reap_ready_cqes() {
+                Some(count) => ControlFlow::Continue(count),
+                None => {
                     // poison pill detected, time to shut down
-                    return;
+                    ControlFlow::Break(())
                 }
             }
         }

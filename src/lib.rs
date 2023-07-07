@@ -127,8 +127,6 @@
     nonstandard_style,
     rust_2018_idioms,
     missing_copy_implementations,
-    trivial_casts,
-    trivial_numeric_casts,
     unsafe_code,
     unused_qualifications
 )]
@@ -203,7 +201,10 @@ mod metrics;
 mod io_uring;
 
 #[cfg(target_os = "linux")]
-pub use io_uring::{Config, Ordering, Rio, Uring};
+pub use io_uring::{
+    Reaper, io_uring_params, Config, Ordering, Rio,
+    Uring,
+};
 
 pub use completion::Completion;
 
@@ -216,7 +217,10 @@ use {
 
 /// Create a new IO system.
 pub fn new() -> io::Result<Rio> {
-    Config::default().start()
+    let (rio, reaper) =
+        Config::default().start(false).unwrap();
+    assert!(reaper.is_none());
+    Ok(rio)
 }
 
 /// Encompasses various types of IO structures that

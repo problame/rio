@@ -1,3 +1,7 @@
+use std::os::fd::RawFd;
+
+use libc::c_void;
+
 use super::*;
 
 /// Nice bindings for the shiny new linux IO system
@@ -16,6 +20,7 @@ impl std::ops::Deref for Rio {
 #[derive(Debug)]
 pub struct Uring {
     sq: Mutex<Sq>,
+    cq: Option<Arc<Mutex<Cq>>>,
     ticket_queue: Arc<TicketQueue>,
     in_flight: Arc<InFlight>,
     flags: u32,
@@ -62,6 +67,7 @@ impl Uring {
         flags: u32,
         ring_fd: i32,
         sq: Sq,
+        cq: Option<Arc<Mutex<Cq>>>,
         in_flight: Arc<InFlight>,
         ticket_queue: Arc<TicketQueue>,
     ) -> Uring {
@@ -69,6 +75,7 @@ impl Uring {
             flags,
             ring_fd,
             sq: Mutex::new(sq),
+            cq,
             config,
             in_flight,
             ticket_queue,
@@ -651,6 +658,28 @@ impl Uring {
         })
     }
 
+    /// Register given eventfd. See https://man7.org/linux/man-pages/man3/io_uring_register_eventfd.3.html.
+    /// Useful for bridging with tokio_eventfd.
+    pub fn register_eventfd_async(
+        &self,
+        fd: RawFd,
+    ) -> io::Result<()> {
+        // https://sourcegraph.com/github.com/axboe/liburing@33a326b64769c01dd5ff0e11e510641055c9354d/-/blob/src/register.c?L192-195
+        let fd: std::os::raw::c_int = fd;
+        let ret = crate::io_uring::syscall::register(
+            self.ring_fd,
+            // Don't use IORING_REGISTER_EVENTFD here. The Completion::poll impl
+            // checks for state Reader right after it does ensure_sumit().
+            // It will observe the state is already completed and return Poll::Ready immediately.
+            // Such situations happen if reads are served from the page cache.
+            IORING_REGISTER_EVENTFD,
+            &fd as *const _ as *const c_void,
+            1,
+        )?;
+        assert_eq!(ret, 0);
+        Ok(())
+    }
+
     /// Block until all items in the submission queue
     /// are submitted to the kernel. This can
     /// be avoided by using the `SQPOLL` mode
@@ -688,7 +717,36 @@ impl Uring {
         F: FnOnce(&mut io_uring_sqe),
         C: FromCqe,
     {
-        let ticket = self.ticket_queue.pop();
+        let ticket = match self.cq {
+            // Block here.
+            // The reaper thread is running, they'll poll for completions,
+            // thereby freeing up tickets.
+            None => self.ticket_queue.pop(),
+            // There's no reaper thread. It's our job in case there
+            // are no tickets available.
+            Some(ref cq) => {
+                loop {
+                    match self.ticket_queue.try_pop() {
+                        Some(ticket) => break ticket,
+                        None => {
+                            // ring is full, poll for completions.
+                            match cq.lock()
+                                .unwrap()
+                                // XXX: WAIT=false and yield control to the poller future?
+                                .reaper_iter::<true>(self.ring_fd) {
+                                    std::ops::ControlFlow::Continue(_) => {
+                                        continue;
+                                    },
+                                    std::ops::ControlFlow::Break(poison) => {
+                                        todo!()
+                                    },
+                                }
+                        }
+                    }
+                }
+            }
+        };
+
         let (mut completion, filler) = pair(self);
 
         let data_ptr = self
@@ -703,7 +761,6 @@ impl Uring {
 
         completion.sqe_id =
             self.loaded.fetch_add(1, Release) + 1;
-
         let sqe = {
             let _get_sqe = Measure::new(&M.get_sqe);
             loop {

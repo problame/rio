@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{ops::ControlFlow, sync::Arc};
 
 use super::*;
 
@@ -48,9 +48,29 @@ impl Default for Config {
     }
 }
 
+#[allow(missing_docs)]
+pub struct Reaper {
+    ring_fd: i32,
+    cq: Arc<Mutex<Cq>>,
+}
+
+impl Reaper {
+    #[allow(missing_docs)]
+    pub fn poll(&mut self) -> ControlFlow<(), usize> {
+        // TODO: lifetime of ring_fd ?
+        self.cq
+            .lock()
+            .unwrap()
+            .reaper_iter::<false>(self.ring_fd)
+    }
+}
+
 impl Config {
     /// Start the `Rio` system.
-    pub fn start(mut self) -> io::Result<Rio> {
+    pub fn start(
+        mut self,
+        own_reaper: bool,
+    ) -> io::Result<(Rio, Option<Reaper>)> {
         let mut params =
             if let Some(params) = self.raw_params.take() {
                 params
@@ -103,18 +123,42 @@ impl Config {
             ticket_queue.clone(),
         )?;
 
-        std::thread::spawn(move || {
-            let mut cq = cq;
-            cq.reaper(ring_fd)
-        });
+        if own_reaper {
+            let cq = Arc::new(Mutex::new(cq));
+            let reaper = Reaper {
+                ring_fd,
+                cq: Arc::clone(&cq),
+            };
+            return Ok((
+                Rio(Arc::new(Uring::new(
+                    self,
+                    params.flags,
+                    ring_fd,
+                    sq,
+                    Some(cq),
+                    in_flight,
+                    ticket_queue,
+                ))),
+                Some(reaper),
+            ));
+        } else {
+            std::thread::spawn(move || {
+                let mut cq = cq;
+                cq.reaper_thread(ring_fd);
+            });
 
-        Ok(Rio(Arc::new(Uring::new(
-            self,
-            params.flags,
-            ring_fd,
-            sq,
-            in_flight,
-            ticket_queue,
-        ))))
+            Ok((
+                Rio(Arc::new(Uring::new(
+                    self,
+                    params.flags,
+                    ring_fd,
+                    sq,
+                    None,
+                    in_flight,
+                    ticket_queue,
+                ))),
+                None,
+            ))
+        }
     }
 }

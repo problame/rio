@@ -3,6 +3,7 @@ use std::{
     convert::TryFrom,
     fs::File,
     io,
+    mem::MaybeUninit,
     net::{TcpListener, TcpStream},
     ops::Neg,
     os::unix::io::{AsRawFd, FromRawFd},
@@ -13,7 +14,6 @@ use std::{
         },
         Arc, Condvar, Mutex,
     },
-    mem::MaybeUninit
 };
 
 use super::{
@@ -35,16 +35,17 @@ pub(crate) use {
     constants::*,
     cq::Cq,
     in_flight::InFlight,
-    kernel_types::{
-        io_uring_cqe, io_uring_params, io_uring_sqe,
-    },
+    kernel_types::{io_uring_cqe, io_uring_sqe},
     sq::Sq,
     syscall::{enter, setup},
     ticket_queue::TicketQueue,
 };
 
+pub use kernel_types::io_uring_params;
+
 pub use {
     config::Config,
+    config::Reaper,
     uring::{Rio, Uring},
 };
 

@@ -38,4 +38,9 @@ impl TicketQueue {
         }
         tickets.pop().unwrap()
     }
+
+    pub(crate) fn try_pop(&self) -> Option<usize> {
+        let mut tickets = self.tickets.lock().unwrap();
+        tickets.pop()
+    }
 }

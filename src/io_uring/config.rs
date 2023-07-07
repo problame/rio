@@ -63,6 +63,14 @@ impl Reaper {
             .unwrap()
             .reaper_iter::<false>(self.ring_fd)
     }
+    #[allow(missing_docs)]
+    pub fn block(&mut self) -> ControlFlow<(), usize> {
+        // TODO: lifetime of ring_fd ?
+        self.cq
+            .lock()
+            .unwrap()
+            .reaper_iter::<true>(self.ring_fd)
+    }
 }
 
 impl Config {

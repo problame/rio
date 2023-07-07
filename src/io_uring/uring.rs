@@ -737,7 +737,7 @@ impl Uring {
                                     std::ops::ControlFlow::Continue(_) => {
                                         continue;
                                     },
-                                    std::ops::ControlFlow::Break(poison) => {
+                                    std::ops::ControlFlow::Break(()) => {
                                         todo!()
                                     },
                                 }
